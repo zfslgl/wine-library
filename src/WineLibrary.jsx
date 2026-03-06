@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from "react";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 
 const INITIAL_LAYOUT = {
   "8B1": "BLUEBERRY", "8A1": "PASSION", "7B1": "NIGHTJAR", "7A1": "ICE",
@@ -71,6 +71,17 @@ const THEMES = {
   },
 };
 
+// Inventory fill colors
+const FILL_COLORS = {
+  0: { bar: "#C0392B", label: "#C0392B" },
+  1: { bar: "#D35400", label: "#D35400" },
+  2: { bar: "#E67E22", label: "#E67E22" },
+  3: { bar: "#F39C12", label: "#C4A94D" },
+  4: { bar: "#A8B820", label: "#8BA830" },
+  5: { bar: "#27AE60", label: "#27AE60" },
+  6: { bar: "#27AE60", label: "#27AE60" },
+};
+
 function getCategory(wine) {
   if (!wine) return null;
   for (const [cat, wines] of Object.entries(WINE_LISTS)) {
@@ -82,6 +93,13 @@ function getCategory(wine) {
 const SHELVES = [8, 7, 6, 5, 4, 3, 2, 1];
 const SIDES = ["B", "A"];
 const LEVELS = [1, 2, 3, 4, 5];
+
+// Walk order: physical path through the room (shelf 8B levels 1-5, then 8A levels 1-5, etc.)
+const WALK_ORDER = SHELVES.flatMap(shelf =>
+  SIDES.flatMap(side =>
+    LEVELS.map(level => `${shelf}${side}${level}`)
+  )
+);
 
 export default function WineLibrary() {
   const [layout, setLayout] = useState(INITIAL_LAYOUT);
@@ -97,7 +115,16 @@ export default function WineLibrary() {
   const [history, setHistory] = useState([]);
   const [activeShelf, setActiveShelf] = useState(null);
   const [darkMode, setDarkMode] = useState(true);
+
+  // Inventory state
+  const [inventory, setInventory] = useState({}); // { "8B1": 3, "8A1": 5, ... }
+  const [mode, setMode] = useState("map"); // "map" or "inventory"
+  const [invPicker, setInvPicker] = useState(null); // position currently being picked
+  const [walkthrough, setWalkthrough] = useState(null); // { index: 0 } or null
+  const [showInvBars, setShowInvBars] = useState(true);
+
   const editRef = useRef(null);
+  const walkCardRef = useRef(null);
 
   const t = darkMode ? THEMES.dark : THEMES.light;
 
@@ -136,6 +163,7 @@ export default function WineLibrary() {
       .map(([pos, wine]) => ({ pos, wine }));
   }, [search, layout]);
 
+  // Drag handlers
   const handleDragStart = (pos) => { saveToHistory(); setDragSource(pos); };
   const handleDragOver = (e, pos) => { e.preventDefault(); setDragOver(pos); };
   const handleDrop = (targetPos) => {
@@ -151,6 +179,10 @@ export default function WineLibrary() {
   };
 
   const handleCellClick = (pos) => {
+    if (mode === "inventory") {
+      setInvPicker(invPicker === pos ? null : pos);
+      return;
+    }
     if (editingCell) return;
     if (swapMode) {
       if (swapMode === pos) { setSwapMode(null); return; }
@@ -173,6 +205,40 @@ export default function WineLibrary() {
     if (editingCell) { saveToHistory(); setLayout(prev => ({ ...prev, [editingCell]: editValue.toUpperCase() })); setEditingCell(null); setEditValue(""); }
   };
 
+  // Inventory functions
+  const setCount = (pos, count) => {
+    setInventory(prev => ({ ...prev, [pos]: count }));
+  };
+
+  const handleWalkthroughPick = (count) => {
+    if (!walkthrough) return;
+    const pos = WALK_ORDER[walkthrough.index];
+    setCount(pos, count);
+    const nextIndex = walkthrough.index + 1;
+    if (nextIndex >= WALK_ORDER.length) {
+      setWalkthrough(null);
+      showToast("Count complete!");
+    } else {
+      setWalkthrough({ index: nextIndex });
+    }
+  };
+
+  const handleQuickPick = (count) => {
+    if (!invPicker) return;
+    setCount(invPicker, count);
+    setInvPicker(null);
+  };
+
+  // Inventory stats
+  const invStats = useMemo(() => {
+    const counted = Object.keys(inventory).length;
+    const total = WALK_ORDER.length;
+    const totalCases = Object.values(inventory).reduce((a, b) => a + b, 0);
+    const lowStock = Object.entries(inventory).filter(([, c]) => c <= 1).length;
+    const empty = Object.entries(inventory).filter(([, c]) => c === 0).length;
+    return { counted, total, totalCases, lowStock, empty };
+  }, [inventory]);
+
   const uniqueWines = Object.keys(
     Object.values(layout).reduce((acc, w) => { if (w) acc[w] = 1; return acc; }, {})
   ).sort();
@@ -192,6 +258,40 @@ export default function WineLibrary() {
     fontFamily: "'JetBrains Mono', monospace", cursor: "pointer", whiteSpace: "nowrap",
   };
 
+  // Case count selector (reused in quick pick and walkthrough)
+  const renderCasePicker = (currentCount, onPick, large = false) => {
+    const btnSize = large ? "52px" : "36px";
+    const fontSize = large ? "20px" : "14px";
+    return (
+      <div style={{ display: "flex", gap: large ? "8px" : "4px", justifyContent: "center", flexWrap: "wrap" }}>
+        {[0, 1, 2, 3, 4, 5, 6].map(n => {
+          const fc = FILL_COLORS[n];
+          const isActive = currentCount === n;
+          return (
+            <button
+              key={n}
+              onClick={(e) => { e.stopPropagation(); onPick(n); }}
+              style={{
+                width: btnSize, height: btnSize,
+                borderRadius: large ? "12px" : "8px",
+                border: `2px solid ${isActive ? fc.bar : t.border}`,
+                background: isActive ? fc.bar + "30" : "transparent",
+                color: isActive ? fc.label : t.textMuted,
+                fontSize, fontWeight: 700,
+                fontFamily: "'JetBrains Mono', monospace",
+                cursor: "pointer",
+                transition: "all 0.15s ease",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              {n}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderCell = (pos) => {
     const wine = layout[pos];
     const cs = getCatStyle(wine);
@@ -201,28 +301,47 @@ export default function WineLibrary() {
     const isSelected = selectedCell === pos;
     const isEditing = editingCell === pos;
     const dimmed = (search || activeCategory) && !isHighlighted(wine);
+    const isInvActive = invPicker === pos;
+    const isWalkActive = walkthrough && WALK_ORDER[walkthrough.index] === pos;
+    const count = inventory[pos];
+    const hasCount = count !== undefined;
 
     return (
       <div
         key={pos}
-        draggable={!isEditing}
-        onDragStart={() => handleDragStart(pos)}
-        onDragOver={(e) => handleDragOver(e, pos)}
-        onDragEnd={() => { setDragSource(null); setDragOver(null); }}
-        onDrop={() => handleDrop(pos)}
+        draggable={mode === "map" && !isEditing}
+        onDragStart={mode === "map" ? () => handleDragStart(pos) : undefined}
+        onDragOver={mode === "map" ? (e) => handleDragOver(e, pos) : undefined}
+        onDragEnd={mode === "map" ? () => { setDragSource(null); setDragOver(null); } : undefined}
+        onDrop={mode === "map" ? () => handleDrop(pos) : undefined}
         onClick={() => handleCellClick(pos)}
         style={{
           position: "relative",
-          padding: "8px 6px", borderRadius: "4px",
-          border: `1px solid ${isSwapSrc ? t.borderActive : isDragTgt ? t.borderActive + "aa" : isSelected ? t.borderActive + "88" : cs.border}`,
-          background: isDragSrc ? t.surface : isDragTgt ? t.surfaceHover : isSwapSrc ? t.surfaceHover : cs.bg,
-          cursor: swapMode ? "crosshair" : "grab",
+          padding: "6px 4px 4px",
+          borderRadius: "4px",
+          border: `1px solid ${
+            isWalkActive ? "#F39C12" :
+            isInvActive ? t.borderActive :
+            isSwapSrc ? t.borderActive :
+            isDragTgt ? t.borderActive + "aa" :
+            isSelected ? t.borderActive + "88" :
+            cs.border
+          }`,
+          background:
+            isWalkActive ? (darkMode ? "#F39C1215" : "#F39C1210") :
+            isDragSrc ? t.surface :
+            isDragTgt ? t.surfaceHover :
+            isSwapSrc ? t.surfaceHover :
+            cs.bg,
+          cursor: mode === "inventory" ? "pointer" : swapMode ? "crosshair" : "grab",
           opacity: dimmed ? 0.2 : isDragSrc ? 0.4 : 1,
           transition: "all 0.2s ease",
           height: "100%", minHeight: "48px",
           display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center",
           userSelect: "none", boxSizing: "border-box",
-          boxShadow: (isSelected || isSwapSrc) ? `0 0 0 2px ${t.accentSoft}` : "none",
+          boxShadow:
+            isWalkActive ? "0 0 0 2px #F39C1244" :
+            (isSelected || isSwapSrc) ? `0 0 0 2px ${t.accentSoft}` : "none",
         }}
       >
         {isEditing ? (
@@ -241,20 +360,49 @@ export default function WineLibrary() {
         ) : (
           <>
             <span style={{
-              fontSize: "9.5px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
+              fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
               color: cs.color, letterSpacing: "0.3px", textAlign: "center", lineHeight: 1.2,
               whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%",
             }}>
               {wine || "—"}
             </span>
             <span style={{
-              fontSize: "7px", color: t.textMuted, fontFamily: "'JetBrains Mono', monospace", marginTop: "2px",
+              fontSize: "7px", color: t.textMuted, fontFamily: "'JetBrains Mono', monospace", marginTop: "1px",
             }}>
               {pos}
             </span>
+            {/* Inventory fill bar */}
+            {(mode === "inventory" || showInvBars) && hasCount && (
+              <div style={{
+                width: "100%", marginTop: "3px", display: "flex", alignItems: "center", gap: "3px",
+              }}>
+                <div style={{
+                  flex: 1, height: "4px", borderRadius: "2px",
+                  background: darkMode ? "#ffffff10" : "#00000010",
+                  overflow: "hidden",
+                }}>
+                  <div style={{
+                    width: `${(count / 6) * 100}%`,
+                    height: "100%", borderRadius: "2px",
+                    background: FILL_COLORS[count].bar,
+                    transition: "width 0.3s ease",
+                  }} />
+                </div>
+                <span style={{
+                  fontSize: "7px", fontWeight: 700,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  color: FILL_COLORS[count].label,
+                  minWidth: "8px", textAlign: "right",
+                }}>
+                  {count}
+                </span>
+              </div>
+            )}
           </>
         )}
-        {isSelected && !swapMode && !isEditing && (
+
+        {/* Map mode popover */}
+        {mode === "map" && isSelected && !swapMode && !isEditing && (
           <div onClick={(e) => e.stopPropagation()} style={{
             position: "absolute", bottom: "calc(100% + 4px)", left: "50%", transform: "translateX(-50%)",
             background: t.popoverBg, border: `1px solid ${t.popoverBorder}`, borderRadius: "6px",
@@ -263,6 +411,25 @@ export default function WineLibrary() {
           }}>
             <button onClick={() => startSwap(pos)} style={popBtn}>⇄ Swap</button>
             <button onClick={() => startEdit(pos)} style={popBtn}>✎ Edit</button>
+          </div>
+        )}
+
+        {/* Inventory quick pick popover */}
+        {mode === "inventory" && isInvActive && !walkthrough && (
+          <div onClick={(e) => e.stopPropagation()} style={{
+            position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+            background: t.popoverBg, border: `1px solid ${t.popoverBorder}`, borderRadius: "10px",
+            padding: "10px 8px 8px", zIndex: 100,
+            boxShadow: `0 6px 24px rgba(0,0,0,${t.shadow})`,
+            minWidth: "200px",
+          }}>
+            <div style={{
+              fontSize: "8px", fontFamily: "'JetBrains Mono', monospace", color: t.textMuted,
+              textAlign: "center", marginBottom: "6px", letterSpacing: "1px", textTransform: "uppercase",
+            }}>
+              Cases — {wine}
+            </div>
+            {renderCasePicker(count, handleQuickPick)}
           </div>
         )}
       </div>
@@ -293,6 +460,11 @@ export default function WineLibrary() {
     </div>
   );
 
+  // Walkthrough card
+  const walkthroughPos = walkthrough ? WALK_ORDER[walkthrough.index] : null;
+  const walkthroughWine = walkthroughPos ? layout[walkthroughPos] : null;
+  const walkthroughCatStyle = walkthroughPos ? getCatStyle(walkthroughWine) : null;
+
   return (
     <div style={{
       minHeight: "100vh", background: t.bg, color: t.text,
@@ -303,7 +475,6 @@ export default function WineLibrary() {
         position: "fixed", inset: 0, opacity: t.grain, pointerEvents: "none",
         backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")`,
       }} />
-
       <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
       {/* Header */}
@@ -318,71 +489,260 @@ export default function WineLibrary() {
             </p>
           </div>
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <button
-              onClick={() => setDarkMode(!darkMode)}
-              style={{ ...toolBtn, fontSize: "14px", padding: "4px 10px", lineHeight: 1 }}
-              title={darkMode ? "Switch to day mode" : "Switch to night mode"}
-            >
+            <button onClick={() => setDarkMode(!darkMode)} style={{ ...toolBtn, fontSize: "14px", padding: "4px 10px", lineHeight: 1 }}>
               {darkMode ? "☀" : "☾"}
             </button>
-            <button onClick={undo} disabled={history.length === 0} style={{ ...toolBtn, opacity: history.length === 0 ? 0.3 : 1 }}>
-              ↩ UNDO
-            </button>
-            <button
-              onClick={() => { if (swapMode) { setSwapMode(null); } else { setLayout(INITIAL_LAYOUT); setHistory([]); showToast("Reset to original"); } }}
-              style={toolBtn}
-            >
-              {swapMode ? "✕ CANCEL" : "↻ RESET"}
-            </button>
-          </div>
-        </div>
-
-        {/* Search & filters */}
-        <div style={{ marginTop: "16px", display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
-          <div style={{ position: "relative", flex: "1 1 200px", maxWidth: "320px" }}>
-            <input
-              type="text" placeholder="Search wines..." value={search}
-              onChange={(e) => { setSearch(e.target.value); setActiveCategory(null); }}
-              style={{
-                width: "100%", padding: "8px 12px 8px 32px", background: t.searchBg,
-                border: `1px solid ${t.border}`, borderRadius: "6px", color: t.searchText,
-                fontSize: "12px", fontFamily: "'JetBrains Mono', monospace", outline: "none", boxSizing: "border-box",
-              }}
-            />
-            <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: t.textMuted, fontSize: "14px" }}>⌕</span>
-            {search && (
-              <button onClick={() => setSearch("")} style={{
-                position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)",
-                background: "none", border: "none", color: t.textMuted, cursor: "pointer", fontSize: "14px", padding: "0 2px",
-              }}>×</button>
+            {mode === "map" && (
+              <>
+                <button onClick={undo} disabled={history.length === 0} style={{ ...toolBtn, opacity: history.length === 0 ? 0.3 : 1 }}>↩ UNDO</button>
+                <button
+                  onClick={() => { if (swapMode) { setSwapMode(null); } else { setLayout(INITIAL_LAYOUT); setHistory([]); showToast("Reset to original"); } }}
+                  style={toolBtn}
+                >{swapMode ? "✕ CANCEL" : "↻ RESET"}</button>
+              </>
             )}
           </div>
-          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-            {Object.entries(t.cat).map(([cat, catColors]) => (
-              <button
-                key={cat}
-                onClick={() => { setActiveCategory(activeCategory === cat ? null : cat); setSearch(""); }}
-                style={{
-                  padding: "4px 10px", borderRadius: "12px",
-                  border: `1px solid ${activeCategory === cat ? catColors.color : t.border}`,
-                  background: activeCategory === cat ? catColors.color + "25" : "transparent",
-                  color: activeCategory === cat ? catColors.color : t.textMuted,
-                  fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
-                  letterSpacing: "0.5px", cursor: "pointer", transition: "all 0.2s", textTransform: "uppercase",
-                }}
-              >{cat}</button>
-            ))}
-          </div>
         </div>
 
-        {search && searchResults && (
+        {/* Mode tabs */}
+        <div style={{ marginTop: "16px", display: "flex", gap: "0", marginBottom: "4px" }}>
+          {[
+            { key: "map", label: "MAP" },
+            { key: "inventory", label: "INVENTORY" },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => {
+                setMode(key);
+                setSelectedCell(null); setSwapMode(null); setEditingCell(null);
+                setInvPicker(null); setWalkthrough(null);
+              }}
+              style={{
+                padding: "8px 20px",
+                borderRadius: key === "map" ? "6px 0 0 6px" : "0 6px 6px 0",
+                border: `1px solid ${t.border}`,
+                borderRight: key === "map" ? "none" : `1px solid ${t.border}`,
+                background: mode === key ? (darkMode ? "#2a2015" : "#FFFFFF") : "transparent",
+                color: mode === key ? t.accent : t.textMuted,
+                fontSize: "10px", fontWeight: 700,
+                fontFamily: "'JetBrains Mono', monospace",
+                letterSpacing: "1.5px",
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Map mode: search & filters */}
+        {mode === "map" && (
+          <div style={{ marginTop: "12px", display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ position: "relative", flex: "1 1 200px", maxWidth: "320px" }}>
+              <input
+                type="text" placeholder="Search wines..." value={search}
+                onChange={(e) => { setSearch(e.target.value); setActiveCategory(null); }}
+                style={{
+                  width: "100%", padding: "8px 12px 8px 32px", background: t.searchBg,
+                  border: `1px solid ${t.border}`, borderRadius: "6px", color: t.searchText,
+                  fontSize: "12px", fontFamily: "'JetBrains Mono', monospace", outline: "none", boxSizing: "border-box",
+                }}
+              />
+              <span style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: t.textMuted, fontSize: "14px" }}>⌕</span>
+              {search && (
+                <button onClick={() => setSearch("")} style={{
+                  position: "absolute", right: "8px", top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", color: t.textMuted, cursor: "pointer", fontSize: "14px", padding: "0 2px",
+                }}>×</button>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+              {Object.entries(t.cat).map(([cat, catColors]) => (
+                <button key={cat} onClick={() => { setActiveCategory(activeCategory === cat ? null : cat); setSearch(""); }}
+                  style={{
+                    padding: "4px 10px", borderRadius: "12px",
+                    border: `1px solid ${activeCategory === cat ? catColors.color : t.border}`,
+                    background: activeCategory === cat ? catColors.color + "25" : "transparent",
+                    color: activeCategory === cat ? catColors.color : t.textMuted,
+                    fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600,
+                    letterSpacing: "0.5px", cursor: "pointer", transition: "all 0.2s", textTransform: "uppercase",
+                  }}
+                >{cat}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Map mode: search results */}
+        {mode === "map" && search && searchResults && (
           <div style={{ marginTop: "8px", fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", color: searchResults.length > 0 ? t.accent : "#8B5E3C" }}>
             {searchResults.length > 0
               ? `${searchResults.length} location${searchResults.length > 1 ? "s" : ""}: ${searchResults.map(r => r.pos).join(", ")}`
               : `No results for "${search}"`}
           </div>
         )}
+
+        {/* Inventory mode: controls */}
+        {mode === "inventory" && !walkthrough && (
+          <div style={{ marginTop: "12px", display: "flex", gap: "12px", alignItems: "center", flexWrap: "wrap" }}>
+            <button
+              onClick={() => setWalkthrough({ index: 0 })}
+              style={{
+                padding: "10px 20px", borderRadius: "8px",
+                border: `1px solid ${t.borderActive}`,
+                background: darkMode ? "#C4A94D18" : "#8B7A2F12",
+                color: t.accent,
+                fontSize: "11px", fontWeight: 700,
+                fontFamily: "'JetBrains Mono', monospace",
+                letterSpacing: "1px", cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+            >
+              ▶ START FULL COUNT
+            </button>
+            {invStats.counted > 0 && (
+              <button
+                onClick={() => { setInventory({}); showToast("Counts cleared"); }}
+                style={toolBtn}
+              >
+                ✕ CLEAR COUNTS
+              </button>
+            )}
+            <div style={{
+              fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", color: t.textMuted,
+              display: "flex", gap: "16px", flexWrap: "wrap",
+            }}>
+              {invStats.counted > 0 && (
+                <>
+                  <span>{invStats.counted}/{invStats.total} counted</span>
+                  <span>{invStats.totalCases} cases</span>
+                  {invStats.lowStock > 0 && <span style={{ color: FILL_COLORS[1].label }}>{invStats.lowStock} low</span>}
+                  {invStats.empty > 0 && <span style={{ color: FILL_COLORS[0].label }}>{invStats.empty} empty</span>}
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Walkthrough overlay */}
+      {walkthrough && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 500,
+          background: darkMode ? "rgba(10,8,6,0.92)" : "rgba(240,237,231,0.95)",
+          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+          padding: "24px",
+          backdropFilter: "blur(8px)",
+        }}>
+          <div ref={walkCardRef} style={{
+            width: "100%", maxWidth: "400px",
+            background: t.popoverBg,
+            border: `1px solid ${t.border}`,
+            borderRadius: "16px",
+            padding: "32px 24px",
+            boxShadow: `0 8px 40px rgba(0,0,0,${t.shadow})`,
+          }}>
+            {/* Progress */}
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px",
+            }}>
+              <span style={{ fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", color: t.textMuted, letterSpacing: "1px" }}>
+                FULL COUNT
+              </span>
+              <span style={{ fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", color: t.textMuted }}>
+                {walkthrough.index + 1} / {WALK_ORDER.length}
+              </span>
+            </div>
+            <div style={{
+              width: "100%", height: "4px", borderRadius: "2px",
+              background: darkMode ? "#ffffff10" : "#00000010",
+              marginBottom: "24px", overflow: "hidden",
+            }}>
+              <div style={{
+                width: `${((walkthrough.index) / WALK_ORDER.length) * 100}%`,
+                height: "100%", borderRadius: "2px", background: t.accent,
+                transition: "width 0.3s ease",
+              }} />
+            </div>
+
+            {/* Current position */}
+            <div style={{ textAlign: "center", marginBottom: "8px" }}>
+              <span style={{
+                fontSize: "14px", fontFamily: "'JetBrains Mono', monospace",
+                color: t.textFaint, letterSpacing: "2px",
+              }}>
+                UNIT {walkthroughPos[0]} · SIDE {walkthroughPos[1]} · LEVEL {walkthroughPos[2]}
+              </span>
+            </div>
+            <div style={{ textAlign: "center", marginBottom: "8px" }}>
+              <span style={{
+                fontSize: "32px", fontFamily: "'JetBrains Mono', monospace",
+                fontWeight: 700, color: t.accent, letterSpacing: "2px",
+              }}>
+                {walkthroughPos}
+              </span>
+            </div>
+            <div style={{ textAlign: "center", marginBottom: "28px" }}>
+              <span style={{
+                fontSize: "18px", fontFamily: "'Cormorant Garamond', serif",
+                fontWeight: 600, color: walkthroughCatStyle.color,
+                letterSpacing: "1px",
+              }}>
+                {walkthroughWine || "EMPTY"}
+              </span>
+            </div>
+
+            {/* Case picker */}
+            <div style={{
+              fontSize: "9px", fontFamily: "'JetBrains Mono', monospace",
+              color: t.textFaint, textAlign: "center", marginBottom: "12px",
+              letterSpacing: "1.5px", textTransform: "uppercase",
+            }}>
+              How many cases?
+            </div>
+            {renderCasePicker(inventory[walkthroughPos], handleWalkthroughPick, true)}
+
+            {/* Nav */}
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              marginTop: "24px", paddingTop: "16px",
+              borderTop: `1px solid ${t.border}`,
+            }}>
+              <button
+                onClick={() => {
+                  if (walkthrough.index > 0) setWalkthrough({ index: walkthrough.index - 1 });
+                }}
+                disabled={walkthrough.index === 0}
+                style={{ ...toolBtn, opacity: walkthrough.index === 0 ? 0.3 : 1 }}
+              >
+                ← BACK
+              </button>
+              <button
+                onClick={() => {
+                  // Skip without setting a count
+                  const next = walkthrough.index + 1;
+                  if (next >= WALK_ORDER.length) {
+                    setWalkthrough(null);
+                    showToast("Count complete!");
+                  } else {
+                    setWalkthrough({ index: next });
+                  }
+                }}
+                style={toolBtn}
+              >
+                SKIP →
+              </button>
+              <button
+                onClick={() => { setWalkthrough(null); }}
+                style={{ ...toolBtn, color: FILL_COLORS[0].label }}
+              >
+                EXIT
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Grid */}
       <div style={{ padding: "20px 16px", overflowX: "auto" }}>
@@ -416,7 +776,7 @@ export default function WineLibrary() {
                 <td style={{ textAlign: "center", fontSize: "10px", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color: t.textMuted, width: "28px", padding: "0" }}>{level}</td>
                 {SHELVES.flatMap(shelf => SIDES.map(side => {
                   const pos = cellId(shelf, side, level);
-                  return <td key={pos} style={{ padding: "0", height: "52px" }}>{renderCell(pos)}</td>;
+                  return <td key={pos} style={{ padding: "0", height: "56px" }}>{renderCell(pos)}</td>;
                 }))}
               </tr>
             ))}
@@ -438,11 +798,14 @@ export default function WineLibrary() {
       {/* Legend */}
       <div style={{ padding: "16px 28px 24px", borderTop: `1px solid ${t.border}` }}>
         <div style={{ fontSize: "9px", fontFamily: "'JetBrains Mono', monospace", color: t.textFaint, marginBottom: "8px", letterSpacing: "1px", textTransform: "uppercase" }}>
-          Drag to rearrange · Tap cell for options · Click unit header to expand
+          {mode === "map"
+            ? "Drag to rearrange · Tap cell for options · Click unit header to expand"
+            : "Tap any cell to set case count · Or use Full Count to walk the room"
+          }
         </div>
         <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
-          {Object.entries(WINE_LISTS).map(([cat, wines]) => {
-            const count = Object.values(layout).filter(w => wines.includes(w)).length;
+          {Object.entries(WINE_LISTS).map(([cat]) => {
+            const count = Object.values(layout).filter(w => WINE_LISTS[cat].includes(w)).length;
             return (
               <div key={cat} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 <div style={{ width: "8px", height: "8px", borderRadius: "2px", background: t.cat[cat].color }} />
